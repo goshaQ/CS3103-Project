@@ -1,24 +1,25 @@
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
-import java.util.BitSet;
-import java.util.Scanner;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class Client implements IMessageHandler {
     private final UUID TRACKER_ID = UUID.randomUUID();
     // private final InetAddress TRACKER_IP = InetAddress.getByName("%TRACKER_IP%");
     private final int TRACKER_PORT = 1234;
-    private final int SERVER_PORT = 5678;
+    private final int SERVER_PORT = 5679;
 
     private UUID clientID;
-    // TODO: put into the separate class "File"
-    private BitSet pieces;
+    private ConcurrentLinkedQueue<DataRequest> outgoingRequests;
+    private ConcurrentLinkedQueue<DataPackage> incomingPieces;
 
     private CommunicationMediator mediator;
     private MessageObserver observer;
+    private FileProxy proxy;
 
     public Client() throws Exception{
         // Generate unique ID
@@ -32,23 +33,29 @@ public class Client implements IMessageHandler {
         observer = new MessageObserver();
         observer.registerMessageHandler(this);
 
+        // Create outgoing requests queue
+        outgoingRequests = new ConcurrentLinkedQueue<>();
+        // Create incoming pieces queue
+        incomingPieces = new ConcurrentLinkedQueue<>();
+
         // Start listening for incoming connections
         acceptConnection();
 
         // Create UDP socket to communicate with the tracker
         //networkManager.addUDPConnection(TRACKER_ID);
 
-        Scanner scanner = new Scanner (System.in);
+        Scanner scanner = new Scanner(System.in);
 
         // Wait for a request of user
         int option = -1;
         while (option != 5) {
-            System.out.println("Select an option:\n");
-            System.out.println("1. Query the centralised server for list of files available.\n");
-            System.out.println("2. Query the centralised server for a specific file.\n");
-            System.out.println("3. Download a file by specifying the filename.\n");
-            System.out.println("4. Inform availability of a new file.\n");
-            System.out.println("5. Exit.\n");
+            System.out.println("Select an option:");
+            System.out.println("1. Query the centralised server for list of files available.");
+            System.out.println("2. Query the centralised server for a specific file.");
+            System.out.println("3. Download a file by specifying the filename.");
+            System.out.println("4. Inform availability of a new file.");
+            System.out.println("5. Exit.");
+
 
             option = scanner.nextInt();
             switch (option) {
@@ -60,7 +67,106 @@ public class Client implements IMessageHandler {
         scanner.close();
     }
 
-    public void acceptConnection() {
+    private void start() {
+        // Process downloads
+        new Thread() {
+            public void run() {
+                while (proxy.getPieces().cardinality() != proxy.getFileInfo().pieceCount) {
+                    download();
+
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        System.err.println("Problem with the upload thread!");
+                    }
+                }
+            }
+        }.start();
+
+        // Process uploads
+        new Thread() {
+            public void run() {
+                while (true) {
+                    upload();
+
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        System.err.println("Problem with the upload thread!");
+                    }
+                }
+            }
+        }.start();
+    }
+
+    private void download() {
+        final int MAXIMUM_NUMBER_OF_REQUESTS = 10;
+
+        DataPackage piece;
+        while ((piece = incomingPieces.poll()) != null) {
+            proxy.writePiece(piece.pieceIndex, piece.data);
+
+            // Notify others about the new available piece
+            mediator.sendPieceUpdateMessage(piece.pieceIndex);
+        }
+
+        int requestCount = 0;
+        for (short pieceIndex : getSortedPieces()) {
+            if (requestCount++ < MAXIMUM_NUMBER_OF_REQUESTS) {
+                UUID peerID = mediator.findPeerOwningPiece(pieceIndex);
+                mediator.sendDataRequestMessage(peerID, pieceIndex);
+            } else {
+                break;
+            }
+        }
+    }
+
+    private Short[] getSortedPieces() {
+        // Get array of available pieces of peers
+        BitSet[] availablePieces = mediator.askForAvailablePieces();
+
+        int pieceCount = proxy.getFileInfo().pieceCount;
+
+        // Calculate occurrences of each piece in available pieces of peers
+        int zeroCount = pieceCount;
+        short[] occurrences = new short[pieceCount];
+        for (BitSet bitSet : availablePieces) {
+            int index = -1;
+            while ((index = bitSet.nextSetBit(index + 1)) != -1) {
+                if (occurrences[index]++ == 0) {
+                    zeroCount--;
+                }
+            }
+        }
+
+        // Create array of indexes
+        Short[] indexes = new Short[pieceCount - zeroCount];
+        for (short i = 0, j = 0; i < pieceCount; i++) {
+            if (occurrences[i] != 0) {
+                indexes[j++] = i;
+            }
+        }
+
+        // Sort the array of indexes accordingly to occurrences of each piece
+        Arrays.sort(indexes, new Comparator<Short>() {
+            @Override
+            public int compare(Short o1, Short o2) {
+                return occurrences[o1] - occurrences[o2];
+            }
+        });
+
+        return indexes;
+    }
+
+    private void upload() {
+        DataRequest pieceRequest;
+        while ((pieceRequest = outgoingRequests.poll()) != null) {
+            byte[] data = proxy.readPiece(pieceRequest.pieceIndex);
+            mediator.sendDataPackageMessage(pieceRequest.peerID, pieceRequest.pieceIndex, data);
+        }
+    }
+
+    private void acceptConnection() {
         AsynchronousServerSocketChannel serverSocketChannel;
 
         // Create and bind the socket to the port number
@@ -98,20 +204,78 @@ public class Client implements IMessageHandler {
     }
 
     @Override
-    public void handleHandshakeMessage(UUID peerID, UUID newPeerID) {
-        // Update current (temp) ID of the peer
-        mediator.notifyAboutReceivedHandshake(peerID, newPeerID);
+    public void handleHandshakeMessage(UUID peerID, UUID realPeerID, byte[] fileInfoHash) {
+        // Check whether we have contacted right peer
+        if (!Arrays.equals(proxy.getFileInfo().hash, fileInfoHash)) {
+            mediator.disconnect(peerID);
+        }
+
+        // Update current (possible temp) ID of the peer
+        mediator.notifyAboutReceivedHandshake(peerID, realPeerID);
 
         // Send available pieces to the sender
-        mediator.sendAvailablePiecesMessage(newPeerID);
+        if (proxy.getPieces().cardinality() != 0) {
+            mediator.sendAvailablePiecesMessage(realPeerID);
+        }
     }
 
     @Override
     public void handleAvailablePiecesMessage(UUID peerID, BitSet availablePieces) {
+        // Update current available pieces for the peer
+        mediator.notifyAboutReceivedAvailablePieces(peerID, availablePieces);
+    }
 
+    @Override
+    public void handleDataRequestMessage(UUID peerID, short pieceIndex) {
+        // Put the request into appropriate queue
+        DataRequest dataRequest = new DataRequest(peerID, pieceIndex);
+        outgoingRequests.add(dataRequest);
+    }
+
+    @Override
+    public void handleDataPackageMessage(UUID peerID, short pieceIndex, byte[] data) {
+        // Put the piece into appropriate queue
+        DataPackage dataPackage = new DataPackage(peerID, pieceIndex, data);
+        incomingPieces.add(dataPackage);
+    }
+
+    @Override
+    public void handlePieceUpdateMessage(UUID peerID, short pieceIndex) {
+        // Update the new available piece of the peer
+        mediator.notifyAboutReceivedPieceUpdate(peerID, pieceIndex);
     }
 
     public UUID getClientID() {
         return clientID;
+    }
+
+    public BitSet getAvailablePieces() {
+        return proxy.getPieces();
+    }
+
+    public FileInfo getFileInfo() {
+        return proxy.getFileInfo();
+    }
+}
+
+class DataRequest {
+    public final UUID peerID;
+    public final short pieceIndex;
+
+    public DataRequest(UUID peerID, short pieceIndex) {
+        this.peerID = peerID;
+        this.pieceIndex = pieceIndex;
+    }
+}
+
+class DataPackage {
+    public final UUID peerID;
+    public final short pieceIndex;
+    public final byte[] data;
+
+    public DataPackage(UUID peerID, short pieceIndex, byte[] data) {
+        this.peerID = peerID;
+        this.pieceIndex = pieceIndex;
+        this.data = data;
     }
 }

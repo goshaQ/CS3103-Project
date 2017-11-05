@@ -20,13 +20,14 @@ public class Peer {
 
     private UUID peerID;
     private BitSet availablePieces;
-
-    private boolean handshakeReceived = false;
+    private BitSet requestedPieces;
 
     public Peer(UUID peerID, CommunicationMediator mediator, MessageObserver observer, InetAddress peerIP, int peerPort) {
         this.peerID = peerID;
         this.mediator = mediator;
         this.observer = observer;
+        this.availablePieces = new BitSet();
+        this.requestedPieces = new BitSet();
         this.socketAddress = new InetSocketAddress(peerIP, peerPort);
     }
 
@@ -34,6 +35,8 @@ public class Peer {
         this.peerID = peerID;
         this.mediator = mediator;
         this.observer = observer;
+        this.availablePieces = new BitSet();
+        this.requestedPieces = new BitSet();
         this.socketChannel = socketChannel;
         this.socketAddress = null;
     }
@@ -56,7 +59,7 @@ public class Peer {
                 data.write(buffer.array(), 0, length);
 
                 // Extract size of the received message
-                int messageLength = observer.extractMessageSize(data.toByteArray());
+                int messageLength = extractMessageSize(data.toByteArray());
                 int dataLength;
 
                 while ((dataLength = data.size()) >= messageLength) {
@@ -70,9 +73,10 @@ public class Peer {
                     data.write(message, messageLength, (dataLength - messageLength));
 
                     // Update the length of message
-                    messageLength = observer.extractMessageSize(data.toByteArray());
+                    messageLength = extractMessageSize(data.toByteArray());
                 }
 
+                buffer.clear();
                 socketChannel.read(buffer, null, this);
             }
 
@@ -84,13 +88,16 @@ public class Peer {
         });
 
         mediator.sendHandshakeMessage(peerID);
-        if (handshakeReceived) {
-            mediator.sendAvailablePiecesMessage(peerID);
-        }
     }
 
     public void sendMessage(byte[] message) {
         socketChannel.write(ByteBuffer.wrap(message));
+    }
+
+    private int extractMessageSize(byte[] message) {
+        return (message.length < 4)
+                ? Integer.MAX_VALUE
+                : ByteBuffer.wrap(message, 0, 4).getInt();
     }
 
     public UUID getPeerID() {
@@ -105,15 +112,19 @@ public class Peer {
         return availablePieces;
     }
 
+    public BitSet getRequestedPieces() {
+        return requestedPieces;
+    }
+
     public void setAvailablePieces(BitSet availablePieces) {
         this.availablePieces = availablePieces;
     }
 
-    public boolean isHandshakeReceived() {
-        return handshakeReceived;
+    public void updateAvailablePieces(short pieceIndex) {
+        availablePieces.flip(pieceIndex);
     }
 
-    public void setHandshakeReceived(boolean handshakeReceived) {
-        this.handshakeReceived = handshakeReceived;
+    public void  updateRequestedPieces(short pieceIndex) {
+        requestedPieces.flip(pieceIndex);
     }
 }
