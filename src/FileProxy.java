@@ -12,34 +12,30 @@ import java.util.EnumSet;
 import java.util.LinkedList;
 
 public class FileProxy {
-    public static String LOCATION = "/home/gosha/downloads/1";
-
     private BitSet pieces;
 
     private FileInfo fileInfo;
     private SeekableByteChannel byteChannel;
 
-    public FileProxy(String fileName, long size, int pieceSize, int pieceCount,
-                     BitSet pieces, byte[][] pieceHashes) {
-        this.pieces = (pieces != null) ?  pieces : new BitSet(pieceCount);
+    public FileProxy(String location, FileInfo fileInfo, BitSet pieces) {
+        this.pieces = (pieces != null) ?  pieces : new BitSet(fileInfo.pieceCount);
+        this.fileInfo = fileInfo;
 
         // Obtain path for the up/down file
-        String filePathName = LOCATION + File.separatorChar + fileName;
+        String filePathName = location + File.separatorChar + fileInfo.fileName;
         Path filePath = Paths.get(filePathName);
 
-        this.fileInfo = new FileInfo(fileName, size, pieceSize, pieceCount, pieceHashes);
-
         openStream(filePath);
-        if (pieceHashes == null) {
-            pieceHashes = new byte[pieceCount][];
+        if (fileInfo.pieceHashes == null) {
+            byte[][] pieceHashes = new byte[fileInfo.pieceCount][];
 
-            for (short i = 0; i < pieceCount; i++) {
+            for (short i = 0; i < fileInfo.pieceCount; i++) {
                 byte[] piece = readPiece(i);
                 pieceHashes[i] = FileInfo.SHA_1.digest(piece);
             }
 
             // Reinitialize variable in case of absence of piece hashes values at the beginning
-            this.fileInfo = new FileInfo(fileName, size, pieceSize, pieceCount, pieceHashes);
+            this.fileInfo = new FileInfo(fileInfo.fileName, fileInfo.size, fileInfo.pieceSize, fileInfo.pieceCount, pieceHashes);
         }
     }
 
@@ -114,9 +110,9 @@ public class FileProxy {
         return pieces;
     }
 
-    public static FileProxy create(String fileName) {
+    public static FileProxy create(String location, String fileName) {
         // Open the up/down file to gather file statistics
-        String filePathName = LOCATION + File.separatorChar + fileName;
+        String filePathName = location + File.separatorChar + fileName;
         File file = new File(filePathName);
 
         long size = file.length();
@@ -126,7 +122,8 @@ public class FileProxy {
         BitSet pieces = new BitSet(pieceCount);
         pieces.flip(0, pieceCount);
 
-        return new FileProxy(fileName, size, pieceSize, pieceCount, pieces, null);
+        FileInfo fileInfo = new FileInfo(fileName, size, pieceSize, pieceCount, null);
+        return new FileProxy(location, fileInfo, pieces);
     }
 
     private static int getOptimalPieceSize(long size) {

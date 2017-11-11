@@ -2,6 +2,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 public class FileInfo {
+    public static final int BYTES = Long.BYTES + Integer.BYTES + Integer.BYTES;
+
     public static final MessageDigest SHA_1;
     static {
         MessageDigest tmp = null;

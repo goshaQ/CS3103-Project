@@ -1,7 +1,8 @@
 import java.io.ByteArrayOutputStream;
-import java.net.InetAddress;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
 import java.util.Arrays;
@@ -9,7 +10,7 @@ import java.util.BitSet;
 import java.util.UUID;
 
 public class Peer {
-    private static final int BUFFER_SIZE = 256;
+    private static final int BUFFER_SIZE = 1024;
 
     private CommunicationMediator mediator;
     private MessageObserver observer;
@@ -22,13 +23,15 @@ public class Peer {
     private BitSet availablePieces;
     private BitSet requestedPieces;
 
-    public Peer(UUID peerID, CommunicationMediator mediator, MessageObserver observer, InetAddress peerIP, int peerPort) {
-        this.peerID = peerID;
+    public Peer(PeerInfo peerInfo, CommunicationMediator mediator, MessageObserver observer) {
+        this.peerID = peerInfo.peerID;
         this.mediator = mediator;
         this.observer = observer;
         this.availablePieces = new BitSet();
         this.requestedPieces = new BitSet();
-        this.socketAddress = new InetSocketAddress(peerIP, peerPort);
+        this.socketAddress = new InetSocketAddress(peerInfo.inetAddress, peerInfo.port);
+
+        mediator.registerPeer(this);
     }
 
     public Peer(UUID peerID, CommunicationMediator mediator, MessageObserver observer, AsynchronousSocketChannel socketChannel) {
@@ -39,13 +42,15 @@ public class Peer {
         this.requestedPieces = new BitSet();
         this.socketChannel = socketChannel;
         this.socketAddress = null;
+
+        mediator.registerPeer(this);
     }
 
     public void connect() {
         if (socketChannel == null) {
             try {
                 socketChannel = AsynchronousSocketChannel.open();
-                socketChannel.connect(socketAddress);
+                socketChannel.connect(socketAddress).get();
             } catch (Exception e) {
                 System.err.println("Can't connect to a peer with the following ID: " + peerID.toString());
                 return;
@@ -55,6 +60,12 @@ public class Peer {
         socketChannel.read(buffer, null, new CompletionHandler<Integer, Void>() {
             @Override
             public void completed(Integer length, Void attachment) {
+                // Check whether the peer has disconnected
+                if (length < 1) {
+                    disconnect();
+                    return;
+                }
+
                 // Put bytes into the global buffer
                 data.write(buffer.array(), 0, length);
 
@@ -82,12 +93,24 @@ public class Peer {
 
             @Override
             public void failed(Throwable exc, Void attachment) {
+                if (exc instanceof AsynchronousCloseException) return;
+
                 System.err.println("An error occurred during read from the socket" +
                         "associated with a peer with the following ID: " + peerID.toString());
+                disconnect();
             }
         });
 
         mediator.sendHandshakeMessage(peerID);
+    }
+
+    public void disconnect() {
+        try {
+            mediator.deregisterPeer(peerID);
+            socketChannel.close();
+        } catch (IOException e) {
+            System.err.println("Can't disconnect from a peer with the following ID: " + peerID.toString());
+        }
     }
 
     public void sendMessage(byte[] message) {

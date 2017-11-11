@@ -1,4 +1,6 @@
 import java.io.UnsupportedEncodingException;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
@@ -44,24 +46,39 @@ public class ByteAuxiliary {
     }
 
     public static byte[] toByteArray(FileInfo value) {
-        int bufferLength = value.fileName.length() + 1 + (Long.BYTES) +(2 * Integer.BYTES) + (value.pieceHashes.length * FileInfo.SHA_1.getDigestLength());
-        byte[] buffer = new byte[bufferLength];
+        int length = FileInfo.BYTES + (value.fileName.length() * Byte.BYTES) + (value.pieceHashes.length * FileInfo.SHA_1.getDigestLength()) + 1;
+        byte[] buffer = new byte[length];
 
         int offset = 0;
         // Write the name of file
-        System.arraycopy(ByteAuxiliary.toByteArray(value.fileName + '\n'), 0, buffer, offset, value.fileName.length());
+        System.arraycopy(toByteArray(value.fileName + '\n'), 0, buffer, offset, value.fileName.length() + 1);
         // Write the size of file
-        System.arraycopy(ByteAuxiliary.toByteArray(value.size), 0, buffer, (offset += value.fileName.length() + 1), Long.BYTES);
+        System.arraycopy(toByteArray(value.size), 0, buffer, (offset += value.fileName.length() + 1), Long.BYTES);
         // Write the size of piece
-        System.arraycopy(ByteAuxiliary.toByteArray(value.pieceSize), 0, buffer, (offset += Long.BYTES), Integer.BYTES);
+        System.arraycopy(toByteArray(value.pieceSize), 0, buffer, (offset += Long.BYTES), Integer.BYTES);
         // Write the number of pieces
-        System.arraycopy(ByteAuxiliary.toByteArray(value.pieceCount), 0, buffer, (offset += Integer.BYTES), Integer.BYTES);
+        System.arraycopy(toByteArray(value.pieceCount), 0, buffer, (offset += Integer.BYTES), Integer.BYTES);
         // Write the hash for each piece
         offset += Integer.BYTES;
         for (byte[] pieceHash : value.pieceHashes) {
             System.arraycopy(pieceHash, 0, buffer, offset, FileInfo.SHA_1.getDigestLength());
             offset += FileInfo.SHA_1.getDigestLength();
         }
+
+        return buffer;
+    }
+
+    public static byte[] toByteArray(PeerInfo value) {
+        int length = PeerInfo.BYTES;
+        byte[] buffer = new byte[length];
+
+        int offset = 0;
+        // Write the peer ID
+        System.arraycopy(toByteArray(value.peerID), 0, buffer, offset, (2 * Long.BYTES));
+        // Write inet address of the peer
+        System.arraycopy(value.inetAddress.getAddress(), 0, buffer, (offset += (2 * Long.BYTES)), Integer.BYTES);
+        // Write port of the peer
+        System.arraycopy(toByteArray(value.port), 0, buffer, (offset += Integer.BYTES), Integer.BYTES);
 
         return buffer;
     }
@@ -104,10 +121,19 @@ public class ByteAuxiliary {
     }
 
     public static FileInfo recoverFileInfo(byte[] message) {
-        int offset = 0;
+        int fileNameLength = 0, offset = 0;
+
+        // Find the length of the file name
+        for (byte character : message) {
+            if (character == '\n') {
+                break;
+            }
+
+            fileNameLength++;
+        }
 
         // Recover the name of file
-        String fileName = recoverString(Arrays.copyOfRange(message, offset, (offset += Arrays.binarySearch(message, (byte) '\n'))));
+        String fileName = recoverString(Arrays.copyOfRange(message, offset, (offset += fileNameLength)));
         // Recover the size of file
         long size = recoverLong(Arrays.copyOfRange(message, (offset += 1), (offset += Long.BYTES)));
         // Recover the size of piece
@@ -121,5 +147,23 @@ public class ByteAuxiliary {
         }
 
         return new FileInfo(fileName, size, pieceSize, pieceCount, pieceHashes);
+    }
+
+    public static PeerInfo recoverPeerInfo(byte[] message) {
+        int offset = 0;
+
+        try {
+            // Recover the peer ID
+            UUID peerID = recoverUUID(Arrays.copyOfRange(message, offset, (offset += (2 * Long.BYTES))));
+            // Recover inet address of the peer
+            InetAddress inetAddress = InetAddress.getByAddress(Arrays.copyOfRange(message, offset, (offset += Integer.BYTES)));
+            // Recover port of the peer
+            int port = recoverInt(Arrays.copyOfRange(message, offset, (offset += Integer.BYTES)));
+
+            return new PeerInfo(peerID, inetAddress, port);
+        } catch (UnknownHostException e) {
+            System.err.println("Can not recover the peer info");
+            return null;
+        }
     }
 }

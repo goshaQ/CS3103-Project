@@ -1,19 +1,25 @@
 import java.util.*;
 
 public class CommunicationMediator {
-    // Remove one of that
-    private final int MAX_UDP_PACKET_SIZE = 65536;
-    private final int MAX_BUFFER_SIZE = 256;
-
     private HashMap<UUID, Peer> peers = new HashMap<>();
     private Client client = null;
+    private Tracker tracker = null;
 
     public void registerClient(Client client) {
         this.client = client;
     }
 
+    public void registerTracker(Tracker tracker) {
+        this.tracker = tracker;
+    }
+
     public void registerPeer(Peer peer) {
         peers.put(peer.getPeerID(), peer);
+    }
+
+    public void deregisterPeer(UUID peerID) {
+        client.checkOutgoingRequests(peerID);
+        peers.remove(peerID);
     }
 
     public void sendHandshakeMessage(UUID peerID) {
@@ -55,13 +61,39 @@ public class CommunicationMediator {
         }
     }
 
-    public void notifyAboutReceivedHandshake(UUID oldPeerID, UUID realPeerID) {
-        // Update the ID under which the peer with oldPeerID is stored in the hash map
-        Peer peer = peers.remove(oldPeerID);
-        peers.put(realPeerID, peer);
+    public void sendDirectoryListingRequestMessage() {
+        byte[] message = MessageBuilder.buildDirectoryListingRequestMessage();
 
-        // Ask the peer to update its ID with the new one
-        peer.setPeerID(realPeerID);
+        tracker.sendMessage(message);
+    }
+
+    public void sendAnnounceRequestMessage(UUID peerID, FileInfo fileInfo) {
+        byte[] message = MessageBuilder.buildAnnounceRequestMessage(peerID, fileInfo);
+
+        tracker.sendMessage(message);
+    }
+
+    public void sendConnectRequestMessage(UUID peerID, String fileName) {
+        byte[] message = MessageBuilder.buildConnectRequestMessage(peerID, fileName);
+
+        tracker.sendMessage(message);
+    }
+
+    public void sendExitMessage(UUID peerID) {
+        byte[] message = MessageBuilder.buildExitMessage(peerID);
+
+        tracker.sendMessage(message);
+    }
+
+    public void notifyAboutReceivedHandshake(UUID oldPeerID, UUID realPeerID) {
+        if (oldPeerID != realPeerID) {
+            // Update the ID under which the peer with oldPeerID is stored in the hash map
+            Peer peer = peers.remove(oldPeerID);
+            peers.put(realPeerID, peer);
+
+            // Ask the peer to update its ID with the new one
+            peer.setPeerID(realPeerID);
+        }
     }
 
     public void notifyAboutReceivedAvailablePieces(UUID peerID, BitSet availablePieces) {
@@ -74,6 +106,15 @@ public class CommunicationMediator {
         // Update the new available piece of the peer
         Peer peer = peers.get(peerID);
         peer.updateAvailablePieces(pieceIndex);
+    }
+
+    public void notifyAboutClosedConnection() {
+        // Safe disconnect from each peer
+        for (Peer peer :  peers.values()) {
+            peer.disconnect();
+        }
+
+        tracker.disconnect();
     }
 
     public BitSet[] askForAvailablePieces() {
@@ -104,36 +145,8 @@ public class CommunicationMediator {
         return null;
     }
 
-    public void disconnect(UUID peerID) {
-        // ...
+    public void dropPeer(UUID peerID) {
+        Peer peer = peers.get(peerID);
+        peer.disconnect();
     }
-
-//    public void sendUDPMessage(UUID socketID, InetAddress ip, int port, byte[] message) {
-//        DatagramSocket socket = (DatagramSocket) sockets.get(socketID);
-//        DatagramPacket packet = new DatagramPacket(message, message.length, ip, port);
-//
-//        try {
-//            socket.send(packet);
-//        } catch (IOException e) {
-//            System.err.println("Unable to send the UDP message.");
-//        }
-//    }
-
-//    public byte[] receiveUDPMessage(UUID socketID) {
-//        byte[] buffer = new byte[MAX_UDP_PACKET_SIZE];
-//
-//        DatagramSocket socket = (DatagramSocket) sockets.get(socketID);
-//        DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-//
-//        try {
-//            socket.receive(packet);
-//        } catch (IOException e) {
-//            System.err.println("Unable to receive an UDP message.");
-//        }
-//
-//        byte[] result = new byte[packet.getLength()];
-//        System.arraycopy(buffer, 0, result, 0, packet.getLength());
-//
-//        return result;
-//    }
 }

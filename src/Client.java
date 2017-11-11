@@ -1,27 +1,31 @@
 import java.io.IOException;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-public class Client implements IMessageHandler {
-    private final UUID TRACKER_ID = UUID.randomUUID();
-    // private final InetAddress TRACKER_IP = InetAddress.getByName("%TRACKER_IP%");
-    private final int TRACKER_PORT = 1234;
-    private final int SERVER_PORT = 5679;
+public class Client implements ICMessageHandler {
+    private static final String DOWNLOAD_LOCATION = "/home/gosha/downloads/2";
+    private static final String UPLOAD_LOCATION = "/home/gosha/downloads/1";
 
+    private UUID trackerID;
     private UUID clientID;
     private ConcurrentLinkedQueue<DataRequest> outgoingRequests;
     private ConcurrentLinkedQueue<DataPackage> incomingPieces;
 
+    private AsynchronousServerSocketChannel serverSocketChannel;
     private CommunicationMediator mediator;
     private MessageObserver observer;
     private FileProxy proxy;
 
-    public Client() throws Exception{
+    private boolean isStopping;
+
+    public Client() {
+        System.out.println("\nCLIENT MODE ACTIVE\n");
+
         // Generate unique ID
         clientID = UUID.randomUUID();
 
@@ -31,7 +35,7 @@ public class Client implements IMessageHandler {
 
         // Create message observer and register
         observer = new MessageObserver();
-        observer.registerMessageHandler(this);
+        observer.registerCMessageHandler(this);
 
         // Create outgoing requests queue
         outgoingRequests = new ConcurrentLinkedQueue<>();
@@ -41,37 +45,76 @@ public class Client implements IMessageHandler {
         // Start listening for incoming connections
         acceptConnection();
 
-        // Create UDP socket to communicate with the tracker
-        //networkManager.addUDPConnection(TRACKER_ID);
+        // Initialize stopping signal variable
+        isStopping = false;
 
+        // Generate unique ID for the tracker
+        trackerID = UUID.randomUUID();
+        // Create the tracker
+        new Tracker(trackerID, mediator, observer);
+
+        String fileName;
         Scanner scanner = new Scanner(System.in);
 
-        // Wait for a request of user
+        System.out.println("Select an option:");
+        System.out.println("1. Query the centralised server for list of files available.");
+        System.out.println("2. Inform availability of a new file.");
+        System.out.println("3. Download a file by specifying the filename.");
+        System.out.println("4. Exit.\n");
+
+        // Wait for an input from the user
         int option = -1;
-        while (option != 5) {
-            System.out.println("Select an option:");
-            System.out.println("1. Query the centralised server for list of files available.");
-            System.out.println("2. Query the centralised server for a specific file.");
-            System.out.println("3. Download a file by specifying the filename.");
-            System.out.println("4. Inform availability of a new file.");
-            System.out.println("5. Exit.");
-
-
+        while (option != 4) {
             option = scanner.nextInt();
             switch (option) {
                 case 1:
-                    // ...
+                    mediator.sendDirectoryListingRequestMessage();
+                    break;
+                case 2:
+                    // Wait for an input from the user
+                    scanner.nextLine();
+                    System.out.println("\nEnter the file name:");
+                    fileName = scanner.nextLine();
+
+                    // Create the file proxy
+                    this.proxy = FileProxy.create(UPLOAD_LOCATION, fileName);
+
+                    // Send request to the tracker
+                    mediator.sendAnnounceRequestMessage(clientID, getFileInfo());
+
+                    // Start uploading the file
+                    start();
+                    break;
+                case 3:
+                    // Wait for an input from the user
+                    scanner.nextLine();
+                    System.out.println("\nEnter the file name:");
+                    fileName = scanner.nextLine();
+
+                    // Send request to the tracker
+                    mediator.sendConnectRequestMessage(clientID, fileName);
+                    break;
+                case 4:
+                    mediator.sendExitMessage(clientID);
+                    mediator.notifyAboutClosedConnection();
+                    isStopping = true;
+
+                    stopAcceptConnection();
+                    break;
             }
         }
 
         scanner.close();
+        if (proxy != null) {
+            proxy.closeStream();
+        }
     }
 
     private void start() {
         // Process downloads
         new Thread() {
             public void run() {
-                while (proxy.getPieces().cardinality() != proxy.getFileInfo().pieceCount) {
+                while ((proxy.getPieces().cardinality() != proxy.getFileInfo().pieceCount) && (!isStopping)) {
                     download();
 
                     try {
@@ -80,13 +123,15 @@ public class Client implements IMessageHandler {
                         System.err.println("Problem with the upload thread!");
                     }
                 }
+
+                System.out.println("The file has been downloaded.");
             }
         }.start();
 
         // Process uploads
         new Thread() {
             public void run() {
-                while (true) {
+                while (!isStopping) {
                     upload();
 
                     try {
@@ -167,12 +212,10 @@ public class Client implements IMessageHandler {
     }
 
     private void acceptConnection() {
-        AsynchronousServerSocketChannel serverSocketChannel;
-
         // Create and bind the socket to the port number
         try {
             serverSocketChannel = AsynchronousServerSocketChannel.open();
-            serverSocketChannel.bind(new InetSocketAddress(SERVER_PORT));
+            serverSocketChannel.bind(new InetSocketAddress(Main.LISTENING_PORT));
         } catch (IOException e) {
             System.err.println("Can not obtain the server socket.");
             return;
@@ -198,16 +241,36 @@ public class Client implements IMessageHandler {
 
             @Override
             public void failed(Throwable exc, Void attachment) {
+                if (exc instanceof AsynchronousCloseException) return;
+
+                stopAcceptConnection();
                 System.err.println("Can not accept a new connection.");
             }
         });
+    }
+
+    private void stopAcceptConnection() {
+        try {
+            serverSocketChannel.close();
+        } catch (IOException e) {
+            System.err.println("Can not close connection with the server socket.");
+        }
+    }
+
+    public void checkOutgoingRequests(UUID peerID) {
+        for (DataRequest dataRequest : outgoingRequests) {
+            if (dataRequest.peerID.equals(peerID)) {
+                outgoingRequests.remove(dataRequest);
+            }
+        }
     }
 
     @Override
     public void handleHandshakeMessage(UUID peerID, UUID realPeerID, byte[] fileInfoHash) {
         // Check whether we have contacted right peer
         if (!Arrays.equals(proxy.getFileInfo().hash, fileInfoHash)) {
-            mediator.disconnect(peerID);
+            mediator.dropPeer(peerID);
+            return;
         }
 
         // Update current (possible temp) ID of the peer
@@ -255,6 +318,42 @@ public class Client implements IMessageHandler {
 
     public FileInfo getFileInfo() {
         return proxy.getFileInfo();
+    }
+
+    @Override
+    public void handleDirectoryListingReplyMessage(UUID trackerID, String directoryListing) {
+        System.out.println("\nAvailable files at the tracker:");
+        System.out.println(directoryListing);
+    }
+
+    @Override
+    public void handleAnnounceReplyMessage(UUID trackerID, int status) {
+        if (status == 1) {
+            System.out.println("\nThe announcement was successful!");
+        } else {
+            System.out.println("\nThe announcement was NOT successful!");
+            isStopping = true;
+        }
+    }
+
+    @Override
+    public void handleConnectReplyMessage(UUID trackerID, int status, FileInfo fileInfo, ArrayList<PeerInfo> peersInfo) {
+        if (status == 1) {
+            // Create the file proxy
+            this.proxy = new FileProxy(DOWNLOAD_LOCATION, fileInfo, null);
+
+            // Process received list of peers and connect to all of them
+            for (PeerInfo peerInfo : peersInfo) {
+                Peer peer = new Peer(peerInfo, mediator, observer);
+                peer.connect();
+            }
+
+            // Start downloading the file
+            start();
+        } else {
+            System.out.println("\nThe connection was NOT successful!");
+            isStopping = true;
+        }
     }
 }
 
