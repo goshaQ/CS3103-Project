@@ -1,8 +1,9 @@
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.UUID;
 
-public interface IMessageHandler extends ICMessageHandler, ISMessageHandler{
+public interface IMessageHandler extends ICMessageHandler, IRMessageHandler, ISMessageHandler{
 }
 
 interface ICMessageHandler {
@@ -14,11 +15,18 @@ interface ICMessageHandler {
     void handleDirectoryListingReplyMessage(UUID trackerID, String directoryListing);
     void handleAnnounceReplyMessage(UUID trackerID, int status);
     void handleConnectReplyMessage(UUID trackerID, int status, FileInfo fileInfo, ArrayList<PeerInfo> peersInfo);
+    void handleRelayHandshakeMessage(InetAddress inetAddress);
+    void handleAllocateReplyMessage(int port);
+    void handleExitPeerMessage(UUID peerID);
+}
+
+interface IRMessageHandler {
+    void handleAllocateRequestMessage(UUID peerID, UUID realPeerID);
 }
 
 interface ISMessageHandler {
     void handleDirectoryListingRequestMessage(UUID packetID);
-    void handleAnnounceRequestMessage(UUID packetID, UUID peerID, FileInfo fileInfo);
-    void handleConnectRequestMessage(UUID packetID, UUID peerID, String fileName);
+    void handleAnnounceRequestMessage(UUID packetID, PeerInfo peerInfo, FileInfo fileInfo);
+    void handleConnectRequestMessage(UUID packetID, PeerInfo peerInfo, String fileName);
     void handleExitMessage(UUID packetID, UUID peerID);
 }

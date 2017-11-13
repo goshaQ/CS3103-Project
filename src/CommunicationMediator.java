@@ -1,12 +1,23 @@
+import java.net.InetSocketAddress;
 import java.util.*;
 
 public class CommunicationMediator {
     private HashMap<UUID, Peer> peers = new HashMap<>();
     private Client client = null;
+    private RelayServer relayServer = null;
+    private Relay relay = null;
     private Tracker tracker = null;
 
     public void registerClient(Client client) {
         this.client = client;
+    }
+
+    public void registerRelayServer(RelayServer relayServer) {
+        this.relayServer = relayServer;
+    }
+
+    public void registerRelay(Relay relay) {
+        this.relay = relay;
     }
 
     public void registerTracker(Tracker tracker) {
@@ -18,22 +29,34 @@ public class CommunicationMediator {
     }
 
     public void deregisterPeer(UUID peerID) {
-        client.checkOutgoingRequests(peerID);
+        if (client != null) {
+            client.checkOutgoingRequests(peerID);
+        } else {
+            relayServer.dropConnection(peerID);
+        }
+
         peers.remove(peerID);
     }
 
     public void sendHandshakeMessage(UUID peerID) {
         Peer peer = peers.get(peerID);
-        byte[] message = MessageBuilder.buildHandshakeMessage(client.getFileInfo().hash, client.getClientID());
 
-        peer.sendMessage(message);
+        byte[] message;
+        if (client != null) {
+            message = MessageBuilder.buildHandshakeMessage(client.getFileInfo().hash, client.getClientID());
+        } else {
+            message = MessageBuilder.buildRelayHandshakeMessage(peer.getInetAddress());
+            message = MessageBuilder.buildRelayWrappedMessage(peerID, message);
+        }
+
+        sendMessage(peer, message);
     }
 
     public void sendAvailablePiecesMessage(UUID peerID) {
         Peer peer = peers.get(peerID);
         byte[] message = MessageBuilder.buildAvailablePiecesMessage(client.getAvailablePieces());
 
-        peer.sendMessage(message);
+        sendMessage(peer, message);
     }
 
     public void sendDataRequestMessage(UUID peerID, short pieceIndex) {
@@ -41,14 +64,14 @@ public class CommunicationMediator {
         byte[] message = MessageBuilder.buildDataRequestMessage(pieceIndex);
 
         peer.updateRequestedPieces(pieceIndex);
-        peer.sendMessage(message);
+        sendMessage(peer, message);
     }
 
     public void sendDataPackageMessage(UUID peerID, short pieceIndex, byte[] data) {
         Peer peer = peers.get(peerID);
         byte[] message = MessageBuilder.buildDataPackageMessage(pieceIndex, data);
 
-        peer.sendMessage(message);
+        sendMessage(peer, message);
     }
 
     public void sendPieceUpdateMessage(short pieceIndex) {
@@ -56,7 +79,7 @@ public class CommunicationMediator {
 
         for (Peer peer :  peers.values()) {
             if (!peer.getAvailablePieces().get(pieceIndex)) {
-                peer.sendMessage(message);
+                sendMessage(peer, message);
             }
         }
     }
@@ -67,14 +90,16 @@ public class CommunicationMediator {
         tracker.sendMessage(message);
     }
 
-    public void sendAnnounceRequestMessage(UUID peerID, FileInfo fileInfo) {
-        byte[] message = MessageBuilder.buildAnnounceRequestMessage(peerID, fileInfo);
+    public void sendAnnounceRequestMessage(UUID peerID, InetSocketAddress socketAddress, FileInfo fileInfo) {
+        PeerInfo peerInfo = new PeerInfo(peerID, socketAddress.getAddress(), socketAddress.getPort());
+        byte[] message = MessageBuilder.buildAnnounceRequestMessage(peerInfo, fileInfo);
 
         tracker.sendMessage(message);
     }
 
-    public void sendConnectRequestMessage(UUID peerID, String fileName) {
-        byte[] message = MessageBuilder.buildConnectRequestMessage(peerID, fileName);
+    public void sendConnectRequestMessage(UUID peerID, InetSocketAddress socketAddress, String fileName) {
+        PeerInfo peerInfo = new PeerInfo(peerID, socketAddress.getAddress(), socketAddress.getPort());
+        byte[] message = MessageBuilder.buildConnectRequestMessage(peerInfo, fileName);
 
         tracker.sendMessage(message);
     }
@@ -83,6 +108,50 @@ public class CommunicationMediator {
         byte[] message = MessageBuilder.buildExitMessage(peerID);
 
         tracker.sendMessage(message);
+    }
+
+    public void sendAllocateRequestMessage(UUID peerID) {
+        byte[] message = MessageBuilder.buildAllocateRequestMessage(peerID);
+
+        relay.sendMessage(message);
+    }
+
+    public void sendAllocateReplyMessage(UUID peerID, int port) {
+        Peer peer = peers.get(peerID);
+        byte[] message = MessageBuilder.buildAllocateReplyMessage(port);
+        message = MessageBuilder.buildRelayWrappedMessage(peerID, message);
+
+        peer.sendMessage(message);
+    }
+
+    public void sendExitPeerMessage(UUID fromPeerID, UUID toPeerID) {
+        Peer peer = peers.get(toPeerID);
+        byte[] message = MessageBuilder.buildPeerExitMessage();
+        message = MessageBuilder.buildRelayWrappedMessage(fromPeerID, message);
+
+        peer.sendMessage(message);
+    }
+
+    public void sendWrappedMessage(UUID fromPeerID, UUID toPeerID, byte[] message) {
+        Peer peer = peers.get(toPeerID);
+        byte[] wrappedMessage = MessageBuilder.buildRelayWrappedMessage(fromPeerID, message);
+
+        peer.sendMessage(wrappedMessage);
+    }
+
+    public void sendUnwrappedMessage(UUID fromPeerID, byte[] message) {
+        UUID toPeerID = ByteAuxiliary.recoverUUID(Arrays.copyOfRange(message, 0, (2 * Long.BYTES)));
+        byte[] unwrappedMessage = MessageBuilder.buildRelayUnwrappedMessage(message);
+
+        relayServer.conveyUnwrappedMessage(fromPeerID, toPeerID, unwrappedMessage);
+    }
+
+    private void sendMessage(Peer peer, byte[] message) {
+        if (!peer.isThroughRelay()) {
+            peer.sendMessage(message);
+        } else {
+            relay.sendMessage(peer.getPeerID(), message);
+        }
     }
 
     public void notifyAboutReceivedHandshake(UUID oldPeerID, UUID realPeerID) {
@@ -144,6 +213,15 @@ public class CommunicationMediator {
 
         return null;
     }
+
+    public boolean peerExists(UUID peerID) {
+        return peers.containsKey(peerID);
+    }
+
+    public boolean clientExists() {
+        return client != null;
+    }
+
 
     public void dropPeer(UUID peerID) {
         Peer peer = peers.get(peerID);

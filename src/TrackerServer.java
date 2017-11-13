@@ -8,10 +8,8 @@ import java.util.HashMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-public class Server implements ISMessageHandler {
+public class TrackerServer implements ISMessageHandler {
     private static final int MAX_UDP_PACKET_SIZE = 65507;
-    private final int LISTENING_PORT = 7777;
-
     private byte[] buffer = new byte[MAX_UDP_PACKET_SIZE];
 
     private HashMap<UUID, DatagramPacket> packets = new HashMap<>();
@@ -21,7 +19,7 @@ public class Server implements ISMessageHandler {
     private DatagramSocket socket;
     private MessageObserver observer;
 
-    public Server() {
+    public TrackerServer() {
         System.out.println("\nSERVER MODE ACTIVE\n");
 
         // Create message observer and register
@@ -30,7 +28,7 @@ public class Server implements ISMessageHandler {
 
         // Try to obtain the server socket
         try {
-            socket = new DatagramSocket(LISTENING_PORT);
+            socket = new DatagramSocket(Main.LISTENING_PORT);
             receiveMessage();
         }catch (SocketException e) {
                 System.err.println("Can not obtain the server socket.");
@@ -108,7 +106,7 @@ public class Server implements ISMessageHandler {
     }
 
     @Override
-    public void handleAnnounceRequestMessage(UUID packetID, UUID peerID, FileInfo fileInfo) {
+    public void handleAnnounceRequestMessage(UUID packetID, PeerInfo peerInfo, FileInfo fileInfo) {
         int status = 1;
 
         // Check whether the file announcement is duplicate
@@ -121,16 +119,13 @@ public class Server implements ISMessageHandler {
 
         if (status != 0) {
             // Add the peer to the peers info hash map
-            if (!peersInfo.containsKey(peerID)) {
-                DatagramPacket packet = packets.get(packetID);
-                PeerInfo peerInfo = new PeerInfo(peerID, packet.getAddress(), packet.getPort());
-
-                peersInfo.put(peerID, peerInfo);
+            if (!peersInfo.containsKey(peerInfo.peerID)) {
+                peersInfo.put(peerInfo.peerID, peerInfo);
             }
 
             // Create new swarm
             Swarm swarm = new Swarm(fileInfo);
-            swarm.addPeer(peerID);
+            swarm.addPeer(peerInfo.peerID);
 
             // Put into the swarms hash map
             swarms.add(swarm);
@@ -141,7 +136,7 @@ public class Server implements ISMessageHandler {
     }
 
     @Override
-    public void handleConnectRequestMessage(UUID packetID, UUID peerID, String fileName) {
+    public void handleConnectRequestMessage(UUID packetID, PeerInfo peerInfo, String fileName) {
         // Check whether the swarm for the file exists
         Swarm swarm = null;
         for (Swarm s : swarms) {
@@ -161,23 +156,20 @@ public class Server implements ISMessageHandler {
             // Get the list of peers in the swarm
             pInfo = new ArrayList<>();
             for (UUID pID : swarm.peerIDs) {
-                PeerInfo peerInfo = peersInfo.get(pID);
-                pInfo.add(peerInfo);
+                PeerInfo pI = peersInfo.get(pID);
+                pInfo.add(pI);
             }
 
             // Get the file info
             fInfo = swarm.fileInfo;
 
             // Add the peer to the peers info hash map
-            if (!peersInfo.containsKey(peerID)) {
-                DatagramPacket packet = packets.get(packetID);
-                PeerInfo peerInfo = new PeerInfo(peerID, packet.getAddress(), packet.getPort());
-
-                peersInfo.put(peerID, peerInfo);
+            if (!peersInfo.containsKey(peerInfo.peerID)) {
+                peersInfo.put(peerInfo.peerID, peerInfo);
             }
 
             // Add the peer to the swarm
-            swarm.addPeer(peerID);
+            swarm.addPeer(peerInfo.peerID);
         }
 
         byte[] message = MessageBuilder.buildConnectReplyMessage(status, fInfo, pInfo);

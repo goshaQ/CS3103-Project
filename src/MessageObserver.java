@@ -1,3 +1,4 @@
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
@@ -5,10 +6,15 @@ import java.util.UUID;
 
 public class MessageObserver {
     private ICMessageHandler clientHandler;
+    private IRMessageHandler relayServerHandler;
     private ISMessageHandler serverHandler;
 
     public void registerCMessageHandler(ICMessageHandler clientHandler) {
         this.clientHandler = clientHandler;
+    }
+
+    public void registerRMessageHandler(IRMessageHandler relayServerHandler) {
+        this.relayServerHandler = relayServerHandler;
     }
 
     public void registerSMessageHandler(ISMessageHandler serverHandler) {
@@ -58,6 +64,18 @@ public class MessageObserver {
                 break;
             case Exit:
                 handleExitMessage(someID, newMessage);
+                break;
+            case RelayHandshake:
+                handleRelayHandshakeMessage(someID, newMessage);
+                break;
+            case AllocateRequest:
+                handleAllocateRequestMessage(someID, newMessage);
+                break;
+            case AllocateReply:
+                handleAllocateReplyMessage(someID, newMessage);
+                break;
+            case ExitPeer:
+                handleExitPeerMessage(someID, newMessage);
                 break;
         }
     }
@@ -120,11 +138,11 @@ public class MessageObserver {
         int offset = 0;
 
         // Recover the peer ID
-        UUID peerID = ByteAuxiliary.recoverUUID(Arrays.copyOfRange(message, offset, (offset += (2 * Long.BYTES))));
+        PeerInfo peerInfo = ByteAuxiliary.recoverPeerInfo(Arrays.copyOfRange(message, offset, (offset += PeerInfo.BYTES)));
         // Recover the file info
         FileInfo fileInfo = ByteAuxiliary.recoverFileInfo(Arrays.copyOfRange(message, offset, message.length));
 
-        serverHandler.handleAnnounceRequestMessage(packetID, peerID, fileInfo);
+        serverHandler.handleAnnounceRequestMessage(packetID, peerInfo, fileInfo);
     }
 
     private void handleAnnounceReplyMessage(UUID trackerID, byte[] message) {
@@ -137,12 +155,12 @@ public class MessageObserver {
     private void handleConnectRequestMessage(UUID packetID, byte[] message) {
         int offset = 0;
 
-        // Recover the peerID
-        UUID peerID = ByteAuxiliary.recoverUUID(Arrays.copyOfRange(message, offset, (offset += (2 * Long.BYTES))));
+        // Recover information about the peer
+        PeerInfo peerInfo = ByteAuxiliary.recoverPeerInfo(Arrays.copyOfRange(message, offset, (offset += PeerInfo.BYTES)));
         // Recover the file name
         String fileName = ByteAuxiliary.recoverString(Arrays.copyOfRange(message, offset, (message.length - 1)));
 
-        serverHandler.handleConnectRequestMessage(packetID, peerID, fileName);
+        serverHandler.handleConnectRequestMessage(packetID, peerInfo, fileName);
     }
 
     private void handleConnectReplyMessage(UUID trackerID, byte[] message) {
@@ -174,6 +192,31 @@ public class MessageObserver {
         UUID peerID = ByteAuxiliary.recoverUUID(message);
 
         serverHandler.handleExitMessage(packetID, peerID);
+    }
+
+    private void handleRelayHandshakeMessage(UUID peerID, byte[] message) {
+        // Recover the public IP address
+        InetAddress inetAddress = ByteAuxiliary.recoverInetAddress(message);
+
+        clientHandler.handleRelayHandshakeMessage(inetAddress);
+    }
+
+    private void handleAllocateRequestMessage(UUID peerID, byte[] message) {
+        // Recover the peer ID
+        UUID realPeerID = ByteAuxiliary.recoverUUID(message);
+
+        relayServerHandler.handleAllocateRequestMessage(peerID, realPeerID);
+    }
+
+    private void handleAllocateReplyMessage(UUID peerID, byte[] message) {
+        // Recover the allocated port number
+        int port = ByteAuxiliary.recoverInt(message);
+
+        clientHandler.handleAllocateReplyMessage(port);
+    }
+
+    private void handleExitPeerMessage(UUID peerID, byte[] message) {
+        clientHandler.handleExitPeerMessage(peerID);
     }
 
     private MessageType extractMessageType(byte[] message) {

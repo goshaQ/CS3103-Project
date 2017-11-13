@@ -32,6 +32,10 @@ public class ByteAuxiliary {
         return buffer;
     }
 
+    public static byte[] toByteArray(InetAddress value) {
+        return value.getAddress();
+    }
+
     public static byte[] toByteArray(UUID value) {
         ByteBuffer buffer = ByteBuffer.allocate(2 * Long.BYTES);
 
@@ -111,6 +115,17 @@ public class ByteAuxiliary {
         return BitSet.valueOf(message);
     }
 
+    public static InetAddress recoverInetAddress(byte[] message) {
+        InetAddress tmp = null;
+        try {
+            tmp = InetAddress.getByAddress(message);
+        } catch (UnknownHostException e) {
+            System.err.println("There is no such inet address!");
+        }
+
+        return tmp;
+    }
+
     public static UUID recoverUUID(byte[] message) {
         ByteBuffer buffer = ByteBuffer.wrap(message);
 
@@ -152,18 +167,13 @@ public class ByteAuxiliary {
     public static PeerInfo recoverPeerInfo(byte[] message) {
         int offset = 0;
 
-        try {
-            // Recover the peer ID
-            UUID peerID = recoverUUID(Arrays.copyOfRange(message, offset, (offset += (2 * Long.BYTES))));
-            // Recover inet address of the peer
-            InetAddress inetAddress = InetAddress.getByAddress(Arrays.copyOfRange(message, offset, (offset += Integer.BYTES)));
-            // Recover port of the peer
-            int port = recoverInt(Arrays.copyOfRange(message, offset, (offset += Integer.BYTES)));
+        // Recover the peer ID
+        UUID peerID = recoverUUID(Arrays.copyOfRange(message, offset, (offset += (2 * Long.BYTES))));
+        // Recover inet address of the peer
+        InetAddress inetAddress = ByteAuxiliary.recoverInetAddress(Arrays.copyOfRange(message, offset, (offset += Integer.BYTES)));
+        // Recover port of the peer
+        int port = recoverInt(Arrays.copyOfRange(message, offset, (offset += Integer.BYTES)));
 
-            return new PeerInfo(peerID, inetAddress, port);
-        } catch (UnknownHostException e) {
-            System.err.println("Can not recover the peer info");
-            return null;
-        }
+        return new PeerInfo(peerID, inetAddress, port);
     }
 }

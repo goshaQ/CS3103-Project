@@ -6,13 +6,7 @@ public class Tracker {
     private static final InetAddress TRACKER_IP;
     private static final int TRACKER_PORT = 7777;
     static {
-        InetAddress tmp = null;
-        try {
-            tmp = InetAddress.getLocalHost();
-        } catch (UnknownHostException e) {
-            System.err.println("There is no such inet address!");
-        }
-        TRACKER_IP = tmp;
+        TRACKER_IP = ByteAuxiliary.recoverInetAddress(new byte[]{(byte) 172, (byte) 19, (byte) 202, (byte) 186});
     }
 
     private static final int MAX_UDP_PACKET_SIZE = 65507;

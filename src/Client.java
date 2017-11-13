@@ -1,5 +1,5 @@
 import java.io.IOException;
-import java.net.InetSocketAddress;
+import java.net.*;
 import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
@@ -8,8 +8,11 @@ import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class Client implements ICMessageHandler {
+    private static final String NETWORK_INTERFACE_NAME = "enp0s31f6";
     private static final String DOWNLOAD_LOCATION = "/home/gosha/downloads/2";
     private static final String UPLOAD_LOCATION = "/home/gosha/downloads/1";
+
+    private final Object lock;
 
     private UUID trackerID;
     private UUID clientID;
@@ -17,9 +20,13 @@ public class Client implements ICMessageHandler {
     private ConcurrentLinkedQueue<DataPackage> incomingPieces;
 
     private AsynchronousServerSocketChannel serverSocketChannel;
+    private InetSocketAddress privateInetAddress;
+    private InetSocketAddress publicInetAddress;
     private CommunicationMediator mediator;
     private MessageObserver observer;
     private FileProxy proxy;
+    private Relay relay;
+
 
     private boolean isStopping;
 
@@ -37,13 +44,38 @@ public class Client implements ICMessageHandler {
         observer = new MessageObserver();
         observer.registerCMessageHandler(this);
 
+        // Try to connect to the relay server
+        relay = new Relay(mediator, observer);
+        relay.connect();
+
         // Create outgoing requests queue
         outgoingRequests = new ConcurrentLinkedQueue<>();
         // Create incoming pieces queue
         incomingPieces = new ConcurrentLinkedQueue<>();
 
-        // Start listening for incoming connections
-        acceptConnection();
+        // Create lock and wait until the reply from the relay server will be received
+        lock = new Object();
+        synchronized (lock) {
+            try {
+                lock.wait();
+            } catch (InterruptedException e) {
+                System.err.println("The lock has been interrupted.");
+            }
+        }
+
+        if (!privateInetAddress.equals(publicInetAddress)) {
+            System.out.println("\nRelay will NOT be used!\n");
+
+            // Disconnect from the relay server
+            relay.disconnect();
+            // Start listening for incoming connections
+            acceptConnection();
+        } else {
+            System.out.println("\nRelay will be used!\n");
+
+            // Send request for allocation of relay transport address
+            mediator.sendAllocateRequestMessage(clientID);
+        }
 
         // Initialize stopping signal variable
         isStopping = false;
@@ -80,7 +112,7 @@ public class Client implements ICMessageHandler {
                     this.proxy = FileProxy.create(UPLOAD_LOCATION, fileName);
 
                     // Send request to the tracker
-                    mediator.sendAnnounceRequestMessage(clientID, getFileInfo());
+                    mediator.sendAnnounceRequestMessage(clientID, publicInetAddress, getFileInfo());
 
                     // Start uploading the file
                     start();
@@ -92,7 +124,7 @@ public class Client implements ICMessageHandler {
                     fileName = scanner.nextLine();
 
                     // Send request to the tracker
-                    mediator.sendConnectRequestMessage(clientID, fileName);
+                    mediator.sendConnectRequestMessage(clientID, publicInetAddress, fileName);
                     break;
                 case 4:
                     mediator.sendExitMessage(clientID);
@@ -114,17 +146,19 @@ public class Client implements ICMessageHandler {
         // Process downloads
         new Thread() {
             public void run() {
+                boolean isDownloadHappen = false;
                 while ((proxy.getPieces().cardinality() != proxy.getFileInfo().pieceCount) && (!isStopping)) {
                     download();
 
                     try {
+                        isDownloadHappen = true;
                         Thread.sleep(1000);
                     } catch (InterruptedException e) {
                         System.err.println("Problem with the upload thread!");
                     }
                 }
 
-                System.out.println("The file has been downloaded.");
+                if (isDownloadHappen) System.out.println("\nThe file has been downloaded.");
             }
         }.start();
 
@@ -149,6 +183,9 @@ public class Client implements ICMessageHandler {
 
         DataPackage piece;
         while ((piece = incomingPieces.poll()) != null) {
+            // TODO: uncomment
+            // System.out.println("RECEIVED PIECE WITH INDEX " + piece.pieceIndex + " FROM " + piece.peerID);
+
             proxy.writePiece(piece.pieceIndex, piece.data);
 
             // Notify others about the new available piece
@@ -217,30 +254,27 @@ public class Client implements ICMessageHandler {
             serverSocketChannel = AsynchronousServerSocketChannel.open();
             serverSocketChannel.bind(new InetSocketAddress(Main.LISTENING_PORT));
         } catch (IOException e) {
-            System.err.println("Can not obtain the server socket.");
+            System.err.println("Can not obtain the server socket for the client.");
             return;
         }
 
         // Accept an incoming connection
-        serverSocketChannel.accept(null, new CompletionHandler<AsynchronousSocketChannel, Void>() {
+        serverSocketChannel.accept(this, new CompletionHandler<AsynchronousSocketChannel, Client>() {
             @Override
-            public void completed(AsynchronousSocketChannel socketChannel, Void attachment) {
+            public void completed(AsynchronousSocketChannel socketChannel, Client client) {
                 // Accept the next connection
-                serverSocketChannel.accept(null, this);
+                serverSocketChannel.accept(client, this);
 
                 // Generate temp ID and create new peer object
                 UUID peerID = UUID.randomUUID();
-                Peer peer = new Peer(peerID, mediator, observer, socketChannel);
-
-                // Register the peer
-                mediator.registerPeer(peer);
+                Peer peer = new Peer(peerID, mediator, observer, socketChannel, false);
 
                 // Connect to the peer
                 peer.connect();
             }
 
             @Override
-            public void failed(Throwable exc, Void attachment) {
+            public void failed(Throwable exc, Client client) {
                 if (exc instanceof AsynchronousCloseException) return;
 
                 stopAcceptConnection();
@@ -251,9 +285,11 @@ public class Client implements ICMessageHandler {
 
     private void stopAcceptConnection() {
         try {
-            serverSocketChannel.close();
+            if (serverSocketChannel != null) {
+                serverSocketChannel.close();
+            }
         } catch (IOException e) {
-            System.err.println("Can not close connection with the server socket.");
+            System.err.println("Can not close connection with the server socket for the client.");
         }
     }
 
@@ -267,14 +303,20 @@ public class Client implements ICMessageHandler {
 
     @Override
     public void handleHandshakeMessage(UUID peerID, UUID realPeerID, byte[] fileInfoHash) {
-        // Check whether we have contacted right peer
+        // Check whether we have connected to the right peer
         if (!Arrays.equals(proxy.getFileInfo().hash, fileInfoHash)) {
             mediator.dropPeer(peerID);
             return;
         }
 
-        // Update current (possible temp) ID of the peer
-        mediator.notifyAboutReceivedHandshake(peerID, realPeerID);
+        // Check whether we have created previously the peer
+        if (!mediator.peerExists(peerID)) {
+            Peer peer = new Peer(realPeerID, mediator, observer, null, true);
+            peer.connect();
+        } else {
+            // Update current (possible temp) ID of the peer
+            mediator.notifyAboutReceivedHandshake(peerID, realPeerID);
+        }
 
         // Send available pieces to the sender
         if (proxy.getPieces().cardinality() != 0) {
@@ -354,6 +396,44 @@ public class Client implements ICMessageHandler {
             System.out.println("\nThe connection was NOT successful!");
             isStopping = true;
         }
+    }
+
+    @Override
+    public void handleRelayHandshakeMessage(InetAddress inetAddress) {
+        // Find the private IP address
+        try {
+            NetworkInterface networkInterface = NetworkInterface.getByName(NETWORK_INTERFACE_NAME);
+
+            Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
+            while (addresses.hasMoreElements()) {
+                InetAddress iAddress = addresses.nextElement();
+
+                if (iAddress instanceof Inet4Address) {
+                    privateInetAddress = new InetSocketAddress(iAddress, Main.LISTENING_PORT);
+                    break;
+                }
+            }
+        } catch (SocketException e) {
+            throw new RuntimeException(e);
+        }
+
+        // Save the received public IP address
+        publicInetAddress = new InetSocketAddress(inetAddress, Main.LISTENING_PORT);
+
+        // Notify about received handshake from the relay
+        synchronized (lock) {
+            lock.notify();
+        }
+    }
+
+    @Override
+    public void handleAllocateReplyMessage(int port) {
+        publicInetAddress = new InetSocketAddress(Relay.RELAY_IP, port);
+    }
+
+    @Override
+    public void handleExitPeerMessage(UUID peerID) {
+        mediator.deregisterPeer(peerID);
     }
 }
 

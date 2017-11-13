@@ -1,4 +1,5 @@
-import java.lang.reflect.Array;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.UUID;
@@ -100,17 +101,17 @@ public class MessageBuilder {
         return message;
     }
 
-    public static byte[] buildAnnounceRequestMessage(UUID peerID, FileInfo fileInfo) {
+    public static byte[] buildAnnounceRequestMessage(PeerInfo peerInfo, FileInfo fileInfo) {
         int fileInfoLength = FileInfo.BYTES + (fileInfo.fileName.length() * Byte.BYTES) + (fileInfo.pieceHashes.length * FileInfo.SHA_1.getDigestLength());
-        int offset = 0, length = 2 + (2 * Long.BYTES) + fileInfoLength;
+        int offset = 0, length = 2 + PeerInfo.BYTES + fileInfoLength;
 
         byte[] message = new byte[length];
         // Write the type of message
         message[0] = (byte) MessageType.AnnounceRequest.getValue();
-        // Write the peer ID
-        System.arraycopy(ByteAuxiliary.toByteArray(peerID), 0, message, (offset += 1), (2 * Long.BYTES));
-        // Write the converted earlier to byte array file info
-        System.arraycopy(ByteAuxiliary.toByteArray(fileInfo), 0, message, (offset += (2 * Long.BYTES)), (fileInfoLength + 1));
+        // Write information about the client
+        System.arraycopy(ByteAuxiliary.toByteArray(peerInfo), 0, message, (offset += 1), PeerInfo.BYTES);
+        // Write information about the file
+        System.arraycopy(ByteAuxiliary.toByteArray(fileInfo), 0, message, (offset += PeerInfo.BYTES), (fileInfoLength + 1));
 
         return message;
     }
@@ -127,16 +128,16 @@ public class MessageBuilder {
         return message;
     }
 
-    public static byte[] buildConnectRequestMessage(UUID peerID, String fileName) {
-        int offset = 0, length = 1 + (2 * Long.BYTES) + (fileName.length() + 1);
+    public static byte[] buildConnectRequestMessage(PeerInfo peerInfo, String fileName) {
+        int offset = 0, length = 2 + PeerInfo.BYTES + fileName.length();
 
         byte[] message = new byte[length];
         // Write the type of message
         message[0] = (byte) MessageType.ConnectRequest.getValue();
-        // Write the peerID
-        System.arraycopy(ByteAuxiliary.toByteArray(peerID), 0, message, (offset += 1), (2 * Long.BYTES));
+        // Write the information about the client
+        System.arraycopy(ByteAuxiliary.toByteArray(peerInfo), 0, message, (offset += 1), PeerInfo.BYTES);
         // Write the file name
-        System.arraycopy(ByteAuxiliary.toByteArray(fileName + '\n'), 0, message, (offset += (2 * Long.BYTES)), fileName.length() + 1);
+        System.arraycopy(ByteAuxiliary.toByteArray(fileName + '\n'), 0, message, (offset += PeerInfo.BYTES), fileName.length() + 1);
 
         return message;
     }
@@ -176,5 +177,85 @@ public class MessageBuilder {
         System.arraycopy(ByteAuxiliary.toByteArray(peerID), 0, message, 1, (2 * Long.BYTES));
 
         return message;
+    }
+
+    public static byte[] buildRelayHandshakeMessage(InetAddress inetAddress) {
+        int offset = 0, length = 5 + Integer.BYTES;
+
+        byte[] message = new byte[length];
+        // Write the size of message
+        System.arraycopy(ByteAuxiliary.toByteArray(length), 0, message, offset, Integer.BYTES);
+        // Write the type of message
+        message[(offset += Integer.BYTES)] = (byte) MessageType.RelayHandshake.getValue();
+        // Write the peer IP address
+        System.arraycopy(inetAddress.getAddress(), 0, message, (offset += 1), Integer.BYTES);
+
+        return message;
+    }
+
+    public static byte[] buildAllocateRequestMessage(UUID peerID) {
+        int offset = 0, length = 5 + (4 * Long.BYTES);
+
+        byte[] message = new byte[length];
+        // Write the size of message
+        System.arraycopy(ByteAuxiliary.toByteArray(length), 0, message, offset, Integer.BYTES);
+        // Write the type of message
+        message[(offset += Integer.BYTES)] = (byte) MessageType.AllocateRequest.getValue();
+        // Write the sender peer ID
+        System.arraycopy(ByteAuxiliary.toByteArray(peerID), 0, message, (offset += 1), (2 * Long.BYTES));
+
+        return message;
+    }
+
+    public static byte[] buildAllocateReplyMessage(int port) {
+        int offset = 0, length = 5 + (2 * Long.BYTES) + Integer.BYTES;
+
+        byte[] message = new byte[length];
+        // Write the size of message
+        System.arraycopy(ByteAuxiliary.toByteArray(length), 0, message, offset, Integer.BYTES);
+        // Write the type of message
+        message[(offset += Integer.BYTES)] = (byte) MessageType.AllocateReply.getValue();
+        // Write the allocated port number
+        System.arraycopy(ByteAuxiliary.toByteArray(port), 0, message, (offset += 1), Integer.BYTES);
+
+        return message;
+    }
+
+    public static byte[] buildPeerExitMessage() {
+        int offset = 0, length = 5;
+
+        byte[] message = new byte[length];
+        // Write the size of message
+        System.arraycopy(ByteAuxiliary.toByteArray(length), 0, message, offset, Integer.BYTES);
+        // Write the type of message
+        message[(offset += Integer.BYTES)] = (byte) MessageType.ExitPeer.getValue();
+
+        return message;
+    }
+
+    public static byte[] buildRelayWrappedMessage(UUID fromPeerID, byte[] message) {
+        int offset = 0, length = (2 * Long.BYTES) + message.length;
+
+        byte[] wrappedMessage = new byte[length];
+        // Write the size of message
+        System.arraycopy(ByteAuxiliary.toByteArray(length), 0, wrappedMessage, offset, Integer.BYTES);
+        // Write the sender peer ID
+        System.arraycopy(ByteAuxiliary.toByteArray(fromPeerID), 0, wrappedMessage, (offset += Integer.BYTES), (2 * Long.BYTES));
+        // Write the rest of the message
+        System.arraycopy(message, 4, wrappedMessage, (offset += (2 * Long.BYTES)), (message.length - 4));
+
+        return wrappedMessage;
+    }
+
+    public static byte[] buildRelayUnwrappedMessage(byte[] message) {
+        int offset = 0, length =  Integer.BYTES + message.length - (2 * Long.BYTES);
+
+        byte[] unwrappedMessage = new byte[length];
+        // Write the size of message
+        System.arraycopy(ByteAuxiliary.toByteArray(length), 0, unwrappedMessage, offset, Integer.BYTES);
+        // Write the rest of the message except the sender peer ID
+        System.arraycopy(message, (2 * Long.BYTES), unwrappedMessage, (offset += Integer.BYTES), (message.length - (2 * Long.BYTES)));
+
+        return unwrappedMessage;
     }
 }

@@ -10,7 +10,11 @@ public enum MessageType {
     AnnounceReply(8),
     ConnectRequest(9),
     ConnectReply(10),
-    Exit(11);
+    Exit(11),
+    RelayHandshake(12),
+    AllocateRequest(13),
+    AllocateReply(14),
+    ExitPeer(15);
 
     private int value;
     MessageType(int value) {
@@ -47,6 +51,14 @@ public enum MessageType {
                 return ConnectReply;
             case 11:
                 return Exit;
+            case 12:
+                return RelayHandshake;
+            case 13:
+                return AllocateRequest;
+            case 14:
+                return AllocateReply;
+            case 15:
+                return ExitPeer;
         }
         return null;
     }
